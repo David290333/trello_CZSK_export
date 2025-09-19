@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trello CZ/SK – Aktuální stav</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    :root { --bg:#0b0b0c; --fg:#f4f6f8; --muted:#9aa3ad; --accent:#7bdcb5; --card:#15171a; }
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial}
+    header{padding:24px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:20px}
+    .uploader{border:1px dashed #374151;border-radius:12px;padding:20px;display:flex;gap:12px;align-items:center;cursor:pointer;background:var(--card)}
+    .uploader input{display:none}
+    .hint{color:var(--muted);font-size:14px}
+    .btn{background:var(--accent);color:#0b0b0c;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .wrap{padding:0 16px 40px}
+    table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden}
+    th, td{padding:10px 12px;border-bottom:1px solid #222}
+    th{position:sticky;top:0;background:#1a1d21;text-align:left}
+    tr:hover td{background:#121417}
+    .toolbar{display:flex;gap:12px;align-items:center;margin:16px 0}
+    .count{color:var(--muted);font-size:14px}
+    a{color:#9ad7ff}
+    footer{color:var(--muted);font-size:12px;padding:16px}
+    .tag{font-size:12px;color:#fff;background:#334155;border-radius:999px;padding:2px 8px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Report aktuálního stavu z Trella pro CZ & SK</h1>
+    <div class="uploader" id="uploader">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16a1 1 0 0 1-1-1V7.41L8.7 9.7a1 1 0 1 1-1.4-1.4l4-4a1 1 0 0 1 1.4 0l4 4a1 1 0 1 1-1.4 1.4L13 7.41V15a1 1 0 0 1-1 1Z"/><path d="M5 19a3 3 0 0 1-3-3V13a1 1 0 1 1 2 0v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3a1 1 0 1 1 2 0v3a3 3 0 0 1-3 3H5Z"/></svg>
+      <div>
+        <div><strong>Nahraj JSON export z Trella</strong></div>
+        <div class="hint">Soubor přetáhni sem nebo klikni. Stav uvidíš v náhledu a staženém XLSX souboru.</div>
+      </div>
+      <input type="file" id="file" accept=".json" />
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="toolbar">
+      <button class="btn" id="downloadXlsx" disabled>Stáhnout XLSX</button>
+      <div class="count" id="count">Žádná data</div>
+    </div>
+    <div style="overflow:auto;border-radius:12px">
+      <table id="table" role="grid" aria-label="Trello aktuální stav">
+        <thead>
+          <tr>
+            <th>Název kartičky</th>
+            <th>Stav kartičky</th>
+            <th>Datum zadání / Creation Date</th>
+            <th>Pracuje na tom</th>
+            <th>Pozn.</th>
+            <th>URL kartičky</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>
+    Pozn.: "Pracuje na tom" čte custom field s názvem <em>Bere si na starost</em>. Pokud pole/volba neexistuje, zůstane prázdné.
+  </footer>
+
+  <script>
+    const fileInput = document.getElementById('file');
+    const uploader  = document.getElementById('uploader');
+    const tbody     = document.querySelector('#table tbody');
+    const countEl   = document.getElementById('count');
+    const btnXlsx   = document.getElementById('downloadXlsx');
+
+    // Drag & drop
+    ;['dragenter','dragover'].forEach(evt=>uploader.addEventListener(evt,e=>{e.preventDefault();uploader.style.borderColor='#7bdcb5'}));
+    ;['dragleave','drop'].forEach(evt=>uploader.addEventListener(evt,e=>{e.preventDefault();uploader.style.borderColor='#374151'}));
+    uploader.addEventListener('drop', e=>{
+      const f = [...e.dataTransfer.files][0];
+      if(f) handleFile(f);
+    });
+    uploader.addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', e=>{ const f=e.target.files[0]; if(f) handleFile(f); });
+
+    let currentRows = [];
+
+    function handleFile(file){
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(reader.result);
+          const rows = buildRowsFromTrelloExport(data);
+          render(rows);
+        } catch(err){
+          alert('Soubor není platný Trello JSON. '+err.message);
+        }
+      };
+      reader.readAsText(file, 'utf-8');
+    }
+
+    function buildRowsFromTrelloExport(data){
+      const listById = Object.fromEntries((data.lists||[]).map(l=>[l.id, l.name]));
+
+      const cfDef = (data.customFields||[]).find(cf => (cf.name||'').trim().toLowerCase() === 'bere si na starost');
+      const cfId  = cfDef && cfDef.id;
+      const cfOptById = new Map((cfDef?.options||[]).map(o=>[o.id, (o.value&&o.value.text) || (o.value&&o.value.checked) || '']));
+
+      const cards = (data.cards||[]).filter(c=>!c.closed);
+      return cards.map(card => {
+        const listName = listById[card.idList] || '';
+        const created  = trelloIdToDate(card.id);
+        const dateStr  = formatDate(created);
+
+        let assigned = '';
+        const items = card.customFieldItems || [];
+        const it = items.find(i => i.idCustomField === cfId);
+        if(it){
+          assigned = (it.value && (it.value.text || it.value.number || it.value.date)) || cfOptById.get(it.idValue) || '';
+        }
+
+        const url = card.shortUrl || (card.shortLink ? `https://trello.com/c/${card.shortLink}` : '');
+
+        return {
+          name: card.name || '',
+          list: listName,
+          created: dateStr,
+          assigned,
+          note: '',
+          url
+        };
+      });
+    }
+
+    function formatDate(d){
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mm = String(d.getMonth()+1).padStart(2,'0');
+      const yyyy = d.getFullYear();
+      return `${dd}.${mm}.${yyyy}`;
+    }
+
+    function trelloIdToDate(id){
+      const ts = parseInt(String(id).substring(0,8), 16);
+      return new Date(ts*1000);
+    }
+
+    function render(rows){
+      currentRows = rows;
+      tbody.innerHTML = '';
+      for(const r of rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(r.name)}</td>
+          <td>${escapeHtml(r.list)}</td>
+          <td>${escapeHtml(r.created)}</td>
+          <td>${escapeHtml(r.assigned)}</td>
+          <td></td>
+          <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${r.url}</a>` : ''}</td>`;
+        tbody.appendChild(tr);
+      }
+      countEl.textContent = rows.length ? `${rows.length} kartiček` : 'Žádná data';
+      btnXlsx.disabled = !rows.length;
+    }
+
+    btnXlsx.addEventListener('click', ()=>{
+      const header = ['Název kartičky','Stav kartičky','Datum zadání / Creation Date','Pracuje na tom','Pozn.','URL kartičky'];
+      const data = [header, ...currentRows.map(r=>[r.name,r.list,r.created,r.assigned,'',r.url])];
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Report');
+      XLSX.writeFile(wb, 'trello-aktualni-stav.xlsx');
+    });
+
+    function escapeHtml(str){
+      return String(str ?? '').replace(/[&<>"']/g, s=>({"&":"&amp;","<":"&lt;", ">":"&gt;","\"":"&quot;","'":"&#39;"}[s]));
+    }
+  </script>
+</body>
+</html>
