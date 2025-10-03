@@ -107,7 +107,14 @@
       const cfId  = cfDef && cfDef.id;
       const cfOptById = new Map((cfDef?.options||[]).map(o=>[o.id, (o.value&&o.value.text) || (o.value&&o.value.checked) || '']));
 
-      const cards = (data.cards||[]).filter(c=>!c.closed);
+      const SYSTEM_LISTS = new Set(['Chat For Trello! Hidden List']);
+      const SYSTEM_CARD_NAMES = new Set(['Chat For Trello! Board Chat']);
+
+      const cards = (data.cards || []).filter(c => {
+        const listName = listById[c.idList] || '';
+        return !c.closed && !SYSTEM_LISTS.has(listName) && !SYSTEM_CARD_NAMES.has(c.name || '');
+      });
+
       return cards.map(card => {
         const listName = listById[card.idList] || '';
         const created  = trelloIdToDate(card.id);
@@ -122,12 +129,17 @@
 
         const url = card.shortUrl || (card.shortLink ? `https://trello.com/c/${card.shortLink}` : '');
 
+        let note = '';
+        if (card.labels && card.labels.some(l => l.color === 'blue' && l.name === 'Čeká se na klienta')) {
+          note = 'Čeká se na klienta';
+        }
+
         return {
           name: card.name || '',
           list: listName,
           created: dateStr,
           assigned,
-          note: '',
+          note,
           url
         };
       });
@@ -155,7 +167,7 @@
           <td>${escapeHtml(r.list)}</td>
           <td>${escapeHtml(r.created)}</td>
           <td>${escapeHtml(r.assigned)}</td>
-          <td></td>
+          <td>${escapeHtml(r.note)}</td>
           <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${r.url}</a>` : ''}</td>`;
         tbody.appendChild(tr);
       }
@@ -165,7 +177,7 @@
 
     btnXlsx.addEventListener('click', ()=>{
       const header = ['Název kartičky','Stav kartičky','Datum zadání / Creation Date','Pracuje na tom','Pozn.','URL kartičky'];
-      const data = [header, ...currentRows.map(r=>[r.name,r.list,r.created,r.assigned,'',r.url])];
+      const data = [header, ...currentRows.map(r=>[r.name,r.list,r.created,r.assigned,r.note,r.url])];
       const ws = XLSX.utils.aoa_to_sheet(data);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
